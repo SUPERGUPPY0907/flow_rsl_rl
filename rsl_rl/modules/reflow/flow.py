@@ -120,7 +120,7 @@ class MLP(nn.Module):
     def forward(self,
                 x_input: torch.Tensor,
                 observations: torch.Tensor,
-                t: torch.Tensor) -> tuple[torch.Tensor]:
+                t: torch.Tensor) :
         """Forward pass of the MLP.
 
         Args:
