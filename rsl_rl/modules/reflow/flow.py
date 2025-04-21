@@ -8,6 +8,7 @@ from torch.distributions.mixture_same_family import MixtureSameFamily
 import torch.nn.functional as F
 from torch.autograd.functional import jacobian
 from torch.func import jacrev, vmap
+from torch.distributions import Normal
 
 class MLP_w_jac(nn.Module):
     """Multi-layer Perceptron with Jacobian computation capability.
@@ -108,19 +109,31 @@ class MLP(nn.Module):
         output_dim (int): Dimension of output features. Default: 2
     """
 
-    def __init__(self, input_dim: int = 2, hidden_num: int = 256, output_dim: int = 2, activation: torch.nn.Module = torch.nn.Tanh()) :
+    def __init__(self, input_dim: int = 2, hidden_dim: list = [256, 256, 256], output_dim: int = 2, activation: torch.nn.Module = torch.nn.Tanh()) :
         super().__init__()
-        self.fc1 = nn.Linear(input_dim + 1, hidden_num, bias=True)
-        self.fc2 = nn.Linear(hidden_num, hidden_num, bias=True)
-        self.fc3 = nn.Linear(hidden_num, hidden_num, bias=True)
-        self.fc4 = nn.Linear(hidden_num, output_dim, bias=True)
-        self.activation = activation
+        assert len(hidden_dim) > 0, "hidden_dim list must not be empty"
+
+        layers = []
+        layers.append(nn.Linear(input_dim + 1, hidden_dim[0], bias=True))
+        layers.append(activation)
+
+        for i in range(len(hidden_dim) - 1):
+            layers.append(nn.Linear(hidden_dim[i], hidden_dim[i + 1], bias=True))
+            layers.append(activation)
+
+        layers.append(nn.Linear(hidden_dim[-1], output_dim, bias=True))
+        self.net = nn.Sequential(*layers)
+        # self.fc1 = nn.Linear(input_dim + 1, hidden_num, bias=True)
+        # self.fc2 = nn.Linear(hidden_num, hidden_num, bias=True)
+        # self.fc3 = nn.Linear(hidden_num, hidden_num, bias=True)
+        # self.fc4 = nn.Linear(hidden_num, output_dim, bias=True)
+        # self.activation = activation
 
 
     def forward(self,
                 x_input: torch.Tensor,
                 observations: torch.Tensor,
-                t: torch.Tensor) :
+                t: torch.Tensor) -> torch.Tensor:
         """Forward pass of the MLP.
 
         Args:
@@ -130,24 +143,113 @@ class MLP(nn.Module):
 
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor]:
+            torch.Tensor:
                 - Output tensor of shape (batch_size, output_dim)
         """
         # Combine inputs
         inputs = torch.cat([x_input, observations, t], dim=1)
 
         # Forward pass through the network
-        x = self.activation(self.fc1(inputs))
-        x = self.activation(self.fc2(x))
-        x = self.activation(self.fc3(x))
-        output = self.fc4(x)
+        # x = self.activation(self.fc1(inputs))
+        # x = self.activation(self.fc2(x))
+        # x = self.activation(self.fc3(x))
+        output = self.net(inputs)
 
         return output
 
+class Flow(nn.Module):
+    def __init__(self, input_dim, output_dim, a_dim, actor_hidden_dim, activation, N, device):
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.a_dim = a_dim
+        self.N = N
+        self.vec_field = MLP(input_dim=self.input_dim, hidden_dim=actor_hidden_dim, output_dim=self.output_dim, activation=activation)
+        self.device = device
+        self.dist  = Normal(torch.zeros(self.a_dim *2, device=device), torch.ones(self.a_dim * 2, device=device))
 
+    def _Heun_method(self, observations,  x,  N):
+        with torch.enable_grad():
+            observations = observations.unsqueeze(0) if observations.dim() == 1 else observations
+            num_envs = observations.shape[0]
 
+            z = x[..., :self.a_dim].unsqueeze(0) if x.dim() == 1 else x[..., :self.a_dim]
+            y = x[..., self.a_dim:].unsqueeze(0) if x.dim() == 1 else x[..., self.a_dim:]
+            dt = 1.0 / N
+            p = 0.95
 
+            for i in range(N):
 
+                t = torch.ones((num_envs, 1), device=self.device) * i / N
+
+                z_transformed = self.vec_field(y, observations, t)
+                z_in = z + z_transformed * dt
+
+                y_transformed = self.vec_field(z_in, observations, t)
+                y_in = y + y_transformed * dt
+                z = p * z_in + (1-p) * y_in
+                y = p * y_in + (1-p) * z
+
+            out = torch.cat([z, y], dim=-1)
+
+        return out.squeeze(0)
+
+    def _Heun_method_inverse(self, observations,  x,  N):
+
+        observations = observations.unsqueeze(0) if observations.dim() == 1 else observations
+        num_envs = observations.shape[0]
+
+        z = x[..., :self.a_dim].unsqueeze(0) if x.dim() == 1 else x[..., :self.a_dim]
+        y = x[..., self.a_dim:].unsqueeze(0) if x.dim() == 1 else x[..., self.a_dim:]
+        dt = 1.0 / N
+        p = 0.95
+        for i in reversed(range(N)):
+
+            t = torch.ones((num_envs, 1), device=self.device) * i / N
+
+            y_in = (y - (1 - p) * z)/p
+            z_in = (z - (1 - p) * y_in)/p
+            y_transformed = self.vec_field(z_in, observations, t)
+            y = y_in - y_transformed * dt
+            z_transformed = self.vec_field(y, observations, t)
+            z = z_in - z_transformed * dt
+
+        out = torch.cat([z, y], dim=-1)
+
+        return out.squeeze(0)
+
+    def forward(self, observations, jac):
+        num_envs = observations.shape[0]
+
+        action_aug_0 = torch.randn(num_envs, self.a_dim * 2, device=self.device)
+        log_probs = self.dist.log_prob(action_aug_0).sum(dim=-1)
+
+        action_aug= self._Heun_method(observations,  action_aug_0, self.N)
+        # breakpoint()
+        if jac:
+            # assert action_aug_0.requires_grad, "input requires grad"
+            jacobian_fn = jacrev(self._Heun_method, argnums = 1)
+            batched_jacobian_fn = vmap(jacobian_fn, in_dims=(0,  0, None))
+            J = batched_jacobian_fn(observations, action_aug_0, self.N)
+
+            log_probs = log_probs -  torch.log(torch.abs(torch.linalg.det(J)))
+
+        return action_aug, log_probs
+
+    def inverse(self, observations, action_aug,  jac=False):
+
+        action_aug_0 = self._Heun_method_inverse(observations, action_aug, self.N)
+        log_probs = self.dist.log_prob(action_aug_0).sum(dim=-1)
+
+        if jac:
+
+            jacobian_fn = jacrev(self._Heun_method_inverse, argnums=1)
+            batched_jacobian_fn = vmap(jacobian_fn, in_dims=(0, 0, None))
+            J = batched_jacobian_fn(observations, action_aug, self.N)
+
+            log_probs = log_probs + torch.log(torch.abs(torch.linalg.det(J)))
+
+        return log_probs
 
 
 
