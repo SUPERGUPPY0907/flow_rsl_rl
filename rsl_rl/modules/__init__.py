@@ -7,7 +7,6 @@
 
 from .actor_critic import ActorCritic
 from .actor_critic_flow import ActorCriticFlow
-from .actor_critic_flow_v2 import ActorCriticFlow_v2
 from .actor_critic_recurrent import ActorCriticRecurrent
 from .normalizer import EmpiricalNormalization
 from .rnd import RandomNetworkDistillation
@@ -17,7 +16,6 @@ from .student_teacher_recurrent import StudentTeacherRecurrent
 __all__ = [
     "ActorCritic",
     "ActorCriticFlow",
-    "ActorCriticFlow_v2",
     "ActorCriticRecurrent",
     "EmpiricalNormalization",
     "RandomNetworkDistillation",

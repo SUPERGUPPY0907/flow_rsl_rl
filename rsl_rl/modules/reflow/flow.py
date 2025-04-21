@@ -219,22 +219,43 @@ class Flow(nn.Module):
         return out.squeeze(0)
 
     def forward(self, observations, jac):
+        batch = 4096
         num_envs = observations.shape[0]
 
         action_aug_0 = torch.randn(num_envs, self.a_dim * 2, device=self.device)
         log_probs = self.dist.log_prob(action_aug_0).sum(dim=-1)
+        action_aug = torch.empty_like(action_aug_0)
 
-        action_aug= self._Heun_method(observations,  action_aug_0, self.N)
-        # breakpoint()
-        if jac:
-            # assert action_aug_0.requires_grad, "input requires grad"
-            jacobian_fn = jacrev(self._Heun_method, argnums = 1)
-            batched_jacobian_fn = vmap(jacobian_fn, in_dims=(0,  0, None))
-            J = batched_jacobian_fn(observations, action_aug_0, self.N)
+        n = num_envs // batch
+        n += int(num_envs % batch != 0)
 
-            log_probs = log_probs -  torch.log(torch.abs(torch.linalg.det(J)))
+        for i in range(n):
+            action_aug[i*batch:min((i+1)*batch, num_envs)] = self._Heun_method(observations[i*batch:min((i+1)*batch, num_envs)],  action_aug_0[i*batch:min((i+1)*batch, num_envs)], self.N)
+            # breakpoint()
+            if jac:
+                # assert action_aug_0.requires_grad, "input requires grad"
+                jacobian_fn = jacrev(self._Heun_method, argnums = 1)
+                batched_jacobian_fn = vmap(jacobian_fn, in_dims=(0,  0, None))
+                J = batched_jacobian_fn(observations[i*batch:min((i+1)*batch, num_envs)], action_aug_0[i*batch:min((i+1)*batch, num_envs)], self.N).detach()
+
+                log_probs[i*batch:min((i+1)*batch, num_envs)] = log_probs[i*batch:min((i+1)*batch, num_envs)] - torch.log(torch.abs(torch.linalg.det(J)))
 
         return action_aug, log_probs
+
+    def inference(self, observations):
+        batch = 4096
+        num_envs = observations.shape[0]
+
+        action_aug_0 = torch.randn(num_envs, self.a_dim * 2, device=self.device)
+        action_aug = torch.empty_like(action_aug_0)
+
+        n = num_envs // batch
+        n += int(num_envs % batch != 0)
+
+        for i in range(n):
+            action_aug[i*batch:min((i+1)*batch, num_envs)] = self._Heun_method(observations[i*batch:min((i+1)*batch, num_envs)],  action_aug_0[i*batch:min((i+1)*batch, num_envs)], self.N)
+
+        return action_aug
 
     def inverse(self, observations, action_aug,  jac=False):
 
