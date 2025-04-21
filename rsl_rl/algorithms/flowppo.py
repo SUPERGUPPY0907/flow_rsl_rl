@@ -309,12 +309,12 @@ class FlowPPO:
                 # Surrogate loss
                 ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch[i*batch:min((i+1)*batch, original_batch_size)]))
                 # print('ratio:', ratio)
-                # surrogate = -torch.squeeze(advantages_batch[i*batch:min((i+1)*batch, original_batch_size)]) * ratio
-                surrogate_loss= -torch.squeeze(advantages_batch[i*batch:min((i+1)*batch, original_batch_size)]) * torch.clamp(
+                surrogate = -torch.squeeze(advantages_batch[i*batch:min((i+1)*batch, original_batch_size)]) * ratio
+                surrogate_clipped= -torch.squeeze(advantages_batch[i*batch:min((i+1)*batch, original_batch_size)]) * torch.clamp(
                     ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
                 )
-                surrogate_loss = surrogate_loss.mean()
-                # surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+
+                surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
                 # Value function loss
                 if self.use_clipped_value_loss:

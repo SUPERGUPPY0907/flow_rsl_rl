@@ -194,6 +194,33 @@ class Flow(nn.Module):
 
         return out.squeeze(0)
 
+    def _Heun_method_2(self, observations,  x):
+        N = self.N
+
+        observations = observations.unsqueeze(0) if observations.dim() == 1 else observations
+        num_envs = observations.shape[0]
+
+        z = x[..., :self.a_dim].unsqueeze(0) if x.dim() == 1 else x[..., :self.a_dim]
+        y = x[..., self.a_dim:].unsqueeze(0) if x.dim() == 1 else x[..., self.a_dim:]
+        dt = 1.0 / N
+        p = 0.95
+
+        for i in range(N):
+
+            t = torch.ones((num_envs, 1), device=self.device) * i / N
+            # print(y.shape, observations.shape, t.shape)
+            z_transformed = self.vec_field(y, observations, t)
+            z_in = z + z_transformed * dt
+
+            y_transformed = self.vec_field(z_in, observations, t)
+            y_in = y + y_transformed * dt
+            z = p * z_in + (1-p) * y_in
+            y = p * y_in + (1-p) * z
+
+        out = torch.cat([z, y], dim=-1)
+
+        return out.squeeze(0)
+
     def _Heun_method_inverse(self, observations,  x,  N):
 
         observations = observations.unsqueeze(0) if observations.dim() == 1 else observations
@@ -253,7 +280,7 @@ class Flow(nn.Module):
         n += int(num_envs % batch != 0)
 
         for i in range(n):
-            action_aug[i*batch:min((i+1)*batch, num_envs)] = self._Heun_method(observations[i*batch:min((i+1)*batch, num_envs)],  action_aug_0[i*batch:min((i+1)*batch, num_envs)], self.N)
+            action_aug[i*batch:min((i+1)*batch, num_envs)] = self._Heun_method_2(observations[i*batch:min((i+1)*batch, num_envs)],  action_aug_0[i*batch:min((i+1)*batch, num_envs)])
 
         return action_aug
 
