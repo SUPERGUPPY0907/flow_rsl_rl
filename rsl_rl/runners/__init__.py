@@ -7,6 +7,5 @@
 
 from .on_policy_runner import OnPolicyRunner
 from .on_policy_flow_runner import OnPolicyFlowRunner
-from .on_policy_flow_runner_v2 import OnPolicyFlowRunner_v2
 
-__all__ = ["OnPolicyRunner", "OnPolicyFlowRunner","OnPolicyFlowRunner_v2"]
+__all__ = ["OnPolicyRunner", "OnPolicyFlowRunner"]

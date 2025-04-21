@@ -24,6 +24,8 @@ from rsl_rl.modules import (
 )
 from rsl_rl.utils import store_code_state
 
+from rsl_rl.modules import ActorCriticFlow
+
 
 class OnPolicyFlowRunner:
     """On-policy runner for training and evaluation."""
@@ -39,7 +41,7 @@ class OnPolicyFlowRunner:
         self._configure_multi_gpu()
 
         # resolve training type depending on the algorithm
-        if self.alg_cfg["class_name"] in {"PPO", "FlowPPO"}:
+        if self.alg_cfg["class_name"] in {"PPO", "FlowPPO", "FlowPPO_v2"}:
             self.training_type = "rl"
         elif self.alg_cfg["class_name"] == "Distillation":
             self.training_type = "distillation"
@@ -94,7 +96,7 @@ class OnPolicyFlowRunner:
 
         # initialize algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        self.alg: PPO | FlowPPO | Distillation = alg_class(policy, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
+        self.alg: PPO | FlowPPO | FlowPPO_v2| Distillation = alg_class(policy, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
 
         # store training configuration
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
@@ -203,7 +205,6 @@ class OnPolicyFlowRunner:
                     # Sample actions
                     with torch.enable_grad():
                         actions = self.alg.act(obs, privileged_obs)
-                    # breakpoint()
                     actions = 0.5 * actions[..., :self.env.num_actions]+ 0.5 * actions[..., self.env.num_actions:]
                     # Step the environment
                     obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))

@@ -8,6 +8,5 @@
 from .distillation import Distillation
 from .ppo import PPO
 from .flowppo import FlowPPO
-from .flowppo_v2 import FlowPPO_v2
 
-__all__ = ["PPO", "FlowPPO","FlowPPO_v2", "Distillation"]
+__all__ = ["PPO", "FlowPPO", "Distillation"]
