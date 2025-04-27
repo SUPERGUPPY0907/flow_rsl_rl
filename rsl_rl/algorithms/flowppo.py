@@ -263,6 +263,8 @@ class FlowPPO:
                 advantages_batch = advantages_batch.repeat(num_aug, 1)
                 returns_batch = returns_batch.repeat(num_aug, 1)
             self.optimizer.zero_grad()
+
+            kl_hat_list = []
             for i in range(n):
                 # Recompute actions log prob and entropy for current batch of transitions
                 # Note: we need to do this because we updated the policy with the new parameters
@@ -276,41 +278,9 @@ class FlowPPO:
                 # sigma_batch = self.policy.action_std[:original_batch_size]
                 # entropy_batch = self.policy.entropy[:original_batch_size]
 
-                kl_hat = torch.squeeze(old_actions_log_prob_batch[
-                                       i * batch:min((i + 1) * batch, original_batch_size)]) - actions_log_prob_batch
-                SKIP_ADAPTIVE_LEARNING = False
-                # KL
-                if not SKIP_ADAPTIVE_LEARNING and self.desired_kl is not None and self.schedule == "adaptive":
-                    with torch.inference_mode():
-                        # kl = torch.squeeze(old_actions_log_prob_batch[i * batch:min((i + 1) * batch,
-                        #                                                             original_batch_size)]) - actions_log_prob_batch
-                        kl_mean = torch.mean(kl_hat)
+                kl_hat = torch.squeeze(old_actions_log_prob_batch[i * batch:min((i + 1) * batch, original_batch_size)]) - actions_log_prob_batch
 
-                        # Reduce the KL divergence across all GPUs
-                        if self.is_multi_gpu:
-                            torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
-                            kl_mean /= self.gpu_world_size
-
-                        # Update the learning rate
-                        # Perform this adaptation only on the main process
-                        # TODO: Is this needed? If KL-divergence is the "same" across all GPUs,
-                        #       then the learning rate should be the same across all GPUs.
-                        if self.gpu_global_rank == 0:
-                            if kl_mean > self.desired_kl * 2.0:
-                                self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-                                print(self.learning_rate)
-                            elif kl_mean < self.desired_kl / 2.0 and kl_mean > -1.0e-4:
-                                self.learning_rate = min(1e-2, self.learning_rate * 1.5)
-
-                        # Update the learning rate for all GPUs
-                        if self.is_multi_gpu:
-                            lr_tensor = torch.tensor(self.learning_rate, device=self.device)
-                            torch.distributed.broadcast(lr_tensor, src=0)
-                            self.learning_rate = lr_tensor.item()
-
-                        # Update the learning rate for all parameter groups
-                        for param_group in self.optimizer.param_groups:
-                            param_group["lr"] = self.learning_rate
+                kl_hat_list.append(torch.mean(kl_hat))
 
                 # Surrogate loss
                 ratio = torch.exp(-kl_hat)
@@ -387,7 +357,6 @@ class FlowPPO:
                 loss.backward()
 
                 if self.use_compress:
-                    breakpoint()
                     actions = self.policy.actor.inference(obs_batch[i*batch:min((i+1)*batch, original_batch_size)])
                     actions_left = actions[:, :self.policy.actor.a_dim]
                     actions_right = actions[:, self.policy.actor.a_dim:]
@@ -396,7 +365,7 @@ class FlowPPO:
                     compress_loss.backward()
 
                 if self.use_entropy:
-                    breakpoint()
+
                     entropy_batch = self.policy.entropy(obs_batch[i * batch:min((i + 1) * batch, original_batch_size)])
                     loss_entropy = - self.entropy_coef * entropy_batch
                     loss_entropy *= (min((i + 1) * batch, original_batch_size) - i * batch) / original_batch_size
@@ -410,6 +379,40 @@ class FlowPPO:
                 # Collect gradients from all GPUs
                 if self.is_multi_gpu:
                     self.reduce_parameters()
+
+            SKIP_ADAPTIVE_LEARNING = False
+            # KL
+            if not SKIP_ADAPTIVE_LEARNING and self.desired_kl is not None and self.schedule == "adaptive":
+                with torch.inference_mode():
+                    # kl = torch.squeeze(old_actions_log_prob_batch[i * batch:min((i + 1) * batch,
+                    #                                                         original_batch_size)]) - actions_log_prob_batch
+
+                    kl_mean = torch.mean(torch.stack(kl_hat_list))
+
+                    # Reduce the KL divergence across all GPUs
+                    if self.is_multi_gpu:
+                        torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+                        kl_mean /= self.gpu_world_size
+
+                    # Update the learning rate
+                    # Perform this adaptation only on the main process
+                    # TODO: Is this needed? If KL-divergence is the "same" across all GPUs,
+                    #       then the learning rate should be the same across all GPUs.
+                    if self.gpu_global_rank == 0:
+                        if kl_mean > self.desired_kl * 2.0:
+                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                        elif kl_mean < self.desired_kl / 2.0 and kl_mean > -1.0e-4:
+                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+
+                    # Update the learning rate for all GPUs
+                    if self.is_multi_gpu:
+                        lr_tensor = torch.tensor(self.learning_rate, device=self.device)
+                        torch.distributed.broadcast(lr_tensor, src=0)
+                        self.learning_rate = lr_tensor.item()
+
+                    # Update the learning rate for all parameter groups
+                    for param_group in self.optimizer.param_groups:
+                        param_group["lr"] = self.learning_rate
 
             # Apply the gradients
             # -- For PPO
