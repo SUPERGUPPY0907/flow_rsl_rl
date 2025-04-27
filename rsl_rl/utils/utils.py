@@ -30,6 +30,8 @@ def resolve_nn_activation(act_name: str) -> torch.nn.Module:
         return torch.nn.Sigmoid()
     elif act_name == "identity":
         return torch.nn.Identity()
+    elif act_name == "mish":
+        return torch.nn.Mish()
     else:
         raise ValueError(f"Invalid activation function '{act_name}'.")
 

@@ -26,12 +26,15 @@ class ActorCriticFlow(nn.Module):
         num_critic_obs,
         num_actions,
         flow_num_steps: int = 5,
-        flow_module_type: str = "MLP",
+        mix_para: float = 0.95,
+        std: float = 1.0,
+        time_dim: int = 32,
         device = torch.device("cpu"),
         flow_interations: int = 5,
         flow_distill_batch_size: int = 256,
         actor_hidden_dims: list = [256, 256, 256],
         critic_hidden_dims:list = [256, 256, 256],
+        time_hidden_dims:list = [256, 256],
         activation="elu",
         init_noise_std=1.0,
         noise_std_type: str = "scalar",
@@ -61,7 +64,7 @@ class ActorCriticFlow(nn.Module):
         mlp_input_dim_c = self.c_o_dim
 
         # Policy
-        self.actor = Flow(input_dim = mlp_input_dim_a, output_dim = self.a_dim, a_dim = self.a_dim, actor_hidden_dim=actor_hidden_dims, activation = activation, N = flow_num_steps, device = device)
+        self.actor = Flow(input_dim = mlp_input_dim_a, output_dim = self.a_dim, a_dim = self.a_dim, time_dim = time_dim, time_hidden_dim = time_hidden_dims, actor_hidden_dim=actor_hidden_dims, activation = activation, N = flow_num_steps, p = mix_para, device = device)
 
         # Value function
         critic_layers = []
@@ -75,6 +78,7 @@ class ActorCriticFlow(nn.Module):
                 critic_layers.append(activation)
         self.critic = nn.Sequential(*critic_layers)
 
+        print(f"Time Net: {self.actor.time_mlp}")
         print(f"Actor MLP: {self.actor.vec_field}")
         print(f"Critic MLP: {self.critic}")
 
@@ -91,6 +95,11 @@ class ActorCriticFlow(nn.Module):
         self.distribution = None
         # disable args validation for speedup
         Normal.set_default_validate_args(False)
+
+        # entropy
+        self.ip_std =std
+        self.dist = Normal(torch.zeros(self.a_dim * 2, device=self.device),
+                           self.ip_std * torch.ones(self.a_dim * 2, device=self.device))
 
     @staticmethod
     # not used at the moment
@@ -115,9 +124,16 @@ class ActorCriticFlow(nn.Module):
         # return self.distribution.stddev
         return torch.tensor(0.1, device=self.device)
 
-    @property
-    def entropy(self):
-        return torch.tensor(0., device=self.device)
+
+    def entropy(self, obs):
+        num_envs = obs.shape[0]
+        x_sample = torch.randn(num_envs, self.a_dim * 2, device=self.device) * self.ip_std
+        probs_Q = self.dist.log_prob(x_sample).sum(dim=-1).exp()
+        log_probs_P = self.actor.inverse(obs, x_sample, jac=True)
+        probs_P = log_probs_P.exp()
+        weights = probs_P / (probs_Q + 1e-8)
+        entropy_estimate = -(weights * log_probs_P).sum(dim=0)
+        return entropy_estimate
 
     def update_distribution(self, observations):
         raise NotImplementedError
@@ -155,3 +171,4 @@ class ActorCriticFlow(nn.Module):
 
         super().load_state_dict(state_dict, strict=strict)
         return True
+

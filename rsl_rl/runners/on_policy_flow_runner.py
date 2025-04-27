@@ -41,7 +41,7 @@ class OnPolicyFlowRunner:
         self._configure_multi_gpu()
 
         # resolve training type depending on the algorithm
-        if self.alg_cfg["class_name"] in {"PPO", "FlowPPO", "FlowPPO_v2"}:
+        if self.alg_cfg["class_name"] in {"PPO", "FlowPPO"}:
             self.training_type = "rl"
         elif self.alg_cfg["class_name"] == "Distillation":
             self.training_type = "distillation"
@@ -208,6 +208,7 @@ class OnPolicyFlowRunner:
                     actions = 0.5 * actions[..., :self.env.num_actions]+ 0.5 * actions[..., self.env.num_actions:]
                     # Step the environment
                     obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))
+
                     # Move to device
                     obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                     # perform normalization
