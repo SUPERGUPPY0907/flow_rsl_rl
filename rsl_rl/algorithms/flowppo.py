@@ -191,7 +191,7 @@ class FlowPPO:
         )
 
     def update(self):  # noqa: C901
-        batch = 6144
+        batch = 6144 * 4
 
         mean_value_loss = 0
         mean_surrogate_loss = 0
@@ -304,8 +304,7 @@ class FlowPPO:
                     value_loss = (returns_batch[i*batch:min((i+1)*batch, original_batch_size)] - value_batch).pow(2).mean()
 
 
-                loss = surrogate_loss + self.value_loss_coef * value_loss
-                loss *= (min((i+1)*batch, original_batch_size) - i*batch) / original_batch_size
+
                 ## TODO: enhance the policy exploration ability
                 # # Symmetry loss
                 # if self.symmetry:
@@ -354,22 +353,27 @@ class FlowPPO:
                 # Compute the gradients
                 # -- For PPO
 
+
+
+                # compress loss
+                actions = self.policy.actor.inference(obs_batch[i*batch:min((i+1)*batch, original_batch_size)])
+                actions_left = actions[:, :self.policy.actor.a_dim]
+                actions_right = actions[:, self.policy.actor.a_dim:]
+                compress_loss = torch.norm(actions_left - actions_right, dim=1).mean()
+                # compress_loss *= (min((i + 1) * batch, original_batch_size) - i * batch) / original_batch_size
+                # compress_loss.backward()
+
+
+                #entropy loss
+                entropy = -actions_log_prob_batch.mean()
+                loss_entropy = - entropy
+                # loss_entropy *= (min((i + 1) * batch, original_batch_size) - i * batch) / original_batch_size
+                # loss_entropy.backward()
+
+
+                loss = surrogate_loss + self.value_loss_coef * value_loss + self.entropy_coef * loss_entropy + self.compress_coef * compress_loss
+                loss *= (min((i + 1) * batch, original_batch_size) - i * batch) / original_batch_size
                 loss.backward()
-
-                if self.use_compress:
-                    actions = self.policy.actor.inference(obs_batch[i*batch:min((i+1)*batch, original_batch_size)])
-                    actions_left = actions[:, :self.policy.actor.a_dim]
-                    actions_right = actions[:, self.policy.actor.a_dim:]
-                    compress_loss = self.compress_coef * torch.norm(actions_left - actions_right, dim=1).mean()
-                    compress_loss *= (min((i + 1) * batch, original_batch_size) - i * batch) / original_batch_size
-                    compress_loss.backward()
-
-                if self.use_entropy:
-
-                    entropy_batch = self.policy.entropy(obs_batch[i * batch:min((i + 1) * batch, original_batch_size)])
-                    loss_entropy = - self.entropy_coef * entropy_batch
-                    loss_entropy *= (min((i + 1) * batch, original_batch_size) - i * batch) / original_batch_size
-                    loss_entropy.backward()
 
                 # -- For RND
                 # if self.rnd:
@@ -380,9 +384,9 @@ class FlowPPO:
                 if self.is_multi_gpu:
                     self.reduce_parameters()
 
-            SKIP_ADAPTIVE_LEARNING = False
+            # SKIP_ADAPTIVE_LEARNING = False
             # KL
-            if not SKIP_ADAPTIVE_LEARNING and self.desired_kl is not None and self.schedule == "adaptive":
+            if self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
                     # kl = torch.squeeze(old_actions_log_prob_batch[i * batch:min((i + 1) * batch,
                     #                                                         original_batch_size)]) - actions_log_prob_batch
@@ -427,7 +431,8 @@ class FlowPPO:
             # Store the losses
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
-            # mean_entropy += entropy_batch.mean().item()
+
+            mean_entropy += entropy.item()
             # -- RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
